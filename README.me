@@ -1,0 +1,316 @@
+# Kubernetes GitOps with Argo CD
+
+## 1. Project Overview
+
+This project demonstrates how to deploy an application to a Kubernetes cluster using GitOps and Argo CD.
+
+**GitOps** is an approach in which Git acts as the source of truth for the desired state of the Kubernetes cluster. Argo CD continuously monitors the Git repository and synchronizes the cluster with the configuration stored in Git.
+
+## 2. Architecture and Workflow
+
+The deployment workflow is:
+
+**Developer → GitHub → CI/CD → Docker Hub → GitOps Repository → Argo CD → Kubernetes Cluster → Running Pod**
+
+### Step-by-step workflow
+
+1. **Developer:** Pushes application code to GitHub.
+2. **CI/CD Pipeline:** Tests the code, builds a Docker image, and pushes it to Docker Hub.
+3. **Docker Hub:** Stores the application image.
+4. **GitOps Repository:** Stores Kubernetes manifests such as `manifest.yml`, which define the desired application configuration.
+5. **Argo CD:** Monitors the GitOps repository and compares the desired configuration with the actual Kubernetes resources.
+6. **Kubernetes API Server:** Receives resource configurations from Argo CD.
+7. **Scheduler:** Selects a suitable worker node for the Pod.
+8. **Kubelet:** Pulls the container image and starts the container on the selected node.
+
+For a fully automated pipeline, CI/CD must also update the image tag in the GitOps repository. Argo CD does not build Docker images by itself.
+
+## 3. GitOps Repository Structure
+
+Example:
+
+```text
+argo-deployment/
+├── manifest.yml
+└── README.md
+```
+
+The repository contains Kubernetes manifests that describe the desired state of the application.
+
+## 4. Example Kubernetes Pod Manifest
+
+The following manifest deploys a simple Nginx Pod:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx:stable
+      ports:
+        - containerPort: 80
+```
+
+### Explanation
+
+- `apiVersion`: Specifies the Kubernetes API version.
+- `kind: Pod`: Declares a Pod resource.
+- `metadata.name`: Sets the Pod name to `nginx`.
+- `containers`: Defines the containers inside the Pod.
+- `image`: Specifies the Docker image.
+- `containerPort`: Documents the port used by Nginx inside the container. It does not expose the Pod externally.
+
+For production applications, a Deployment is generally preferred because it manages replicas, rollouts, and replacement Pods.
+
+## 5. How Argo CD Works
+
+Argo CD uses the Git repository as the source of the desired configuration.
+
+### Example
+
+Suppose the GitHub repository contains a manifest declaring that an `nginx` Pod should exist.
+
+1. Argo CD reads the manifest from GitHub.
+2. It compares the desired state with the actual state of the cluster.
+3. If the Pod is missing, Argo CD identifies a difference.
+4. Argo CD synchronizes the manifest with Kubernetes.
+5. Kubernetes creates the Pod.
+6. The scheduler selects a worker node.
+7. The kubelet pulls the image and starts the container.
+
+**Important:** Argo CD does not run the container itself. It applies the desired configuration through the Kubernetes API, and Kubernetes manages the Pod lifecycle.
+
+## 6. Desired State vs. Actual State
+
+- **Desired State:** The configuration stored in Git.
+- **Actual State:** The resources currently running in the Kubernetes cluster.
+- **Argo CD:** Compares these states and synchronizes them according to the configured sync policy.
+
+For example, if Git declares that an `nginx` Pod should exist but the Pod is missing from the cluster, Argo CD can create it through synchronization.
+
+If someone manually changes a resource in the cluster, Argo CD can detect configuration drift. When self-healing is enabled, it can correct supported differences automatically.
+
+## 7. Understanding Argo CD Status
+
+Argo CD displays synchronization status and application health separately.
+
+### Sync Status
+
+- **Synced:** The live resources match the desired configuration.
+- **OutOfSync:** The live resources differ from the desired configuration.
+- **Unknown:** Argo CD cannot determine the synchronization status.
+
+### Application Health
+
+- **Healthy:** Resources are considered healthy.
+- **Progressing:** Resources are still starting or becoming ready.
+- **Degraded:** One or more resources have a health problem.
+- **Missing:** An expected resource is absent.
+
+A resource can be `Synced` but `Degraded`. For example, Kubernetes may have created the Pod resource, but the container might fail to start because its image cannot be pulled.
+
+## 8. Useful Kubernetes Commands
+
+### Check the current context
+
+```bash
+kubectl config current-context
+```
+
+### List worker nodes
+
+```bash
+kubectl get nodes -o wide
+```
+
+### List Pods in the current namespace
+
+```bash
+kubectl get pods
+```
+
+### List Pods in all namespaces
+
+```bash
+kubectl get pods -A
+```
+
+A cluster with Argo CD installed is not completely empty because Kubernetes system components and Argo CD itself run in Pods.
+
+### Inspect a Pod
+
+```bash
+kubectl describe pod nginx
+```
+
+Check the Events section to investigate scheduling, image-pull, or startup failures.
+
+### Check the image configured on a Pod
+
+```bash
+kubectl get pod nginx -o jsonpath='{.spec.containers[0].image}'
+```
+
+### Check Argo CD Pods
+
+```bash
+kubectl get pods -n argocd
+```
+
+### List Argo CD Applications
+
+```bash
+kubectl get applications -n argocd
+```
+
+## 9. Updating the Manifest Through GitOps
+
+After changing `manifest.yml` locally, run:
+
+```bash
+git add manifest.yml
+git commit -m "Update Kubernetes manifest"
+git push
+```
+
+Then:
+
+1. Confirm that the change appears in GitHub.
+2. Open the relevant Application in Argo CD.
+3. Refresh the Application if needed.
+4. If automatic sync is disabled, trigger synchronization manually.
+5. Check the sync status and application health.
+6. Verify the live resource using `kubectl`.
+
+When automatic synchronization is enabled, Argo CD normally detects changes in Git and applies them without requiring a manual Sync action.
+
+### Common Git Error: `src refspec main does not match any`
+
+This can occur when no commit exists on the local branch yet.
+
+Use:
+
+```bash
+git add manifest.yml
+git commit -m "Initial GitOps manifest"
+git branch -M main
+git push -u origin main
+```
+
+If a commit already exists, check `git status`, the branch name, and the remote configuration instead of creating an unnecessary commit.
+
+## 10. Troubleshooting Image-Pull Errors
+
+Common Pod statuses include:
+
+- **ErrImagePull:** Kubernetes attempted to pull the image but failed.
+- **ImagePullBackOff:** Kubernetes is backing off before retrying the failed image pull.
+- **Pending:** The Pod has not started, possibly because it cannot be scheduled.
+- **CrashLoopBackOff:** The container repeatedly starts and exits.
+
+Start with:
+
+```bash
+kubectl describe pod nginx
+```
+
+Inspect the Events section for the exact error.
+
+### Common causes
+
+1. Incorrect image name or tag.
+2. Private image without valid registry credentials.
+3. Image architecture incompatible with the worker node.
+4. Network or container registry access problems.
+
+### Test a public image
+
+```bash
+docker pull nginx:stable
+```
+
+### Inspect supported image platforms
+
+```bash
+docker buildx imagetools inspect nginx:stable
+```
+
+### Check the worker-node architecture
+
+```bash
+kubectl get nodes -o wide
+```
+
+Then use the actual node name:
+
+```bash
+kubectl get node local-worker2 -o jsonpath='{.status.nodeInfo.architecture}'
+```
+
+Replace `local-worker2` if your node has a different name.
+
+Do not assume every image-pull error is an architecture issue. Use the Events output to identify the actual cause.
+
+## 11. Traditional CI/CD vs. GitOps
+
+### Traditional CI/CD
+
+A pipeline commonly builds an image, pushes it to a registry, and deploys it by running commands such as:
+
+```bash
+kubectl apply -f deployment.yml
+```
+
+The pipeline needs suitable permissions and network access to the Kubernetes API.
+
+### GitOps
+
+The CI pipeline builds and publishes the image and updates the deployment configuration in Git. Argo CD reads the desired configuration and synchronizes it with Kubernetes.
+
+### Benefits of GitOps
+
+- Git provides version history for configuration changes.
+- Configuration changes can be reviewed before deployment.
+- Argo CD can detect configuration drift.
+- Self-healing can correct supported live-state differences.
+- Argo CD can retry synchronization according to its retry settings.
+- The cluster can be reconciled against the desired configuration in Git.
+
+GitOps does not automatically fix every failure. Incorrect manifests, invalid image tags, permission errors, and application bugs still need to be resolved. Traditional CI/CD can also support retries and drift detection.
+
+## 12. Important Tools and Their Roles
+
+| Tool | Responsibility |
+|---|---|
+| GitHub | Stores application code and deployment configuration |
+| CI/CD | Tests code, builds images, and publishes them |
+| Docker Hub | Stores container images |
+| Kind | Creates a local Kubernetes cluster |
+| Kubernetes API Server | Accepts Kubernetes resource requests |
+| Scheduler | Selects a node for each Pod |
+| Kubelet | Ensures containers run on assigned nodes |
+| Argo CD | Synchronizes Git configuration with Kubernetes |
+| Helm | Packages Kubernetes resources into reusable charts |
+
+## 13. Security and Best Practices
+
+- Never commit passwords, access tokens, or sensitive credentials to Git.
+- Use least-privilege permissions for CI/CD and Argo CD.
+- Prefer versioned image tags, such as commit SHAs, over relying only on mutable tags such as `latest`.
+- Check the Kubernetes context before running destructive commands.
+- Use Deployments instead of standalone Pods for applications requiring managed replicas and rollouts.
+- Use a Service when applications need stable network access.
+- Remember that declaring `containerPort` alone does not expose an application externally.
+
+## 14. Final Summary
+
+The complete GitOps deployment flow is:
+
+**Developer → GitHub → CI/CD builds image → Docker Hub → CI/CD updates deployment Git → Argo CD → Kubernetes API Server → Scheduler → Kubelet → Running Pod**
+
+For this project, the manifest was pushed to GitHub, Argo CD detected the desired configuration, and Kubernetes created the Nginx Pod. After correcting the image reference to `nginx:stable`, the Pod started successfully.
+
+The CI/CD image-building and manifest-update stages require their own workflow configuration. Argo CD manages synchronization of the deployment configuration; Kubernetes runs the application.
